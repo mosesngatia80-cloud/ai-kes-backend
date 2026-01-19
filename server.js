@@ -11,14 +11,15 @@ app.use(express.json());
 // TEMP IN-MEMORY USERS
 const users = [];
 
-// ROOT HEALTH CHECK
+// ROOT ROUTE (VERY IMPORTANT FOR RENDER)
 app.get("/", (req, res) => {
-  res.send("AI KES APP API RUNNING 🚀 (NO DB MODE)");
+  res.status(200).send("AI KES APP API RUNNING 🚀 (NO DB MODE)");
 });
 
 // REGISTER
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
+
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password required" });
   }
@@ -49,14 +50,15 @@ app.post("/api/login", async (req, res) => {
 
   const token = jwt.sign(
     { email },
-    process.env.JWT_SECRET,
+    process.env.JWT_SECRET || "devsecret",
     { expiresIn: "7d" }
   );
 
   res.json({ token });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+// 🚨 LISTEN IMMEDIATELY (KEY FIX)
+const PORT = process.env.PORT;
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
 });
