@@ -11,12 +11,12 @@ app.use(express.json());
 
 /* =========================
    IN-MEMORY USERS (TEMP)
-   Day 7 → DB
+   Later → PostgreSQL
 ========================= */
 const users = [];
 
 /* =========================
-   PLAN LIMITS (DAY 6)
+   PLAN LIMITS
 ========================= */
 const PLAN_LIMITS = {
   free: 5,
@@ -36,7 +36,9 @@ const openai = new OpenAI({
 ========================= */
 function auth(req, res, next) {
   const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ message: "Missing token" });
+  if (!header) {
+    return res.status(401).json({ message: "Missing token" });
+  }
 
   const token = header.split(" ")[1];
   try {
@@ -52,7 +54,7 @@ function auth(req, res, next) {
    ROOT
 ========================= */
 app.get("/", (req, res) => {
-  res.send("AI KES APP API RUNNING 🚀 (DAY 6 MODE)");
+  res.send("AI KES APP API RUNNING 🚀 (DAY 7 MODE)");
 });
 
 /* =========================
@@ -60,11 +62,14 @@ app.get("/", (req, res) => {
 ========================= */
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ message: "Email and password required" });
 
-  if (users.find(u => u.email === email))
+  if (!email || !password) {
+    return res.status(400).json({ message: "Email and password required" });
+  }
+
+  if (users.find(u => u.email === email)) {
     return res.status(400).json({ message: "User already exists" });
+  }
 
   const hashed = await bcrypt.hash(password, 10);
 
@@ -72,7 +77,7 @@ app.post("/api/register", async (req, res) => {
     email,
     password: hashed,
     plan: "free",
-    messagesUsed: 0,
+    messagesUsed: 0
   });
 
   res.json({ message: "User registered (free plan)" });
@@ -83,11 +88,16 @@ app.post("/api/register", async (req, res) => {
 ========================= */
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
+
   const user = users.find(u => u.email === email);
-  if (!user) return res.status(401).json({ message: "Invalid credentials" });
+  if (!user) {
+    return res.status(401).json({ message: "Invalid credentials" });
+  }
 
   const ok = await bcrypt.compare(password, user.password);
-  if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+  if (!ok) {
+    return res.status(401).json({ message: "Invalid credentials" });
+  }
 
   const token = jwt.sign(
     { email },
@@ -99,13 +109,41 @@ app.post("/api/login", async (req, res) => {
 });
 
 /* =========================
+   MANUAL UPGRADE (ADMIN)
+========================= */
+app.post("/api/upgrade", (req, res) => {
+  const { email, plan } = req.body;
+
+  const validPlans = ["free", "basic", "pro"];
+  if (!validPlans.includes(plan)) {
+    return res.status(400).json({ message: "Invalid plan" });
+  }
+
+  const user = users.find(u => u.email === email);
+  if (!user) {
+    return res.status(404).json({ message: "User not found" });
+  }
+
+  user.plan = plan;
+  user.messagesUsed = 0; // reset usage on upgrade
+
+  res.json({
+    message: `User upgraded to ${plan}`,
+    email: user.email,
+    plan: user.plan
+  });
+});
+
+/* =========================
    CHAT (PLAN-AWARE MODE)
 ========================= */
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
-  const user = users.find(u => u.email === req.user.email);
 
-  if (!user) return res.status(401).json({ message: "User not found" });
+  const user = users.find(u => u.email === req.user.email);
+  if (!user) {
+    return res.status(401).json({ message: "User not found" });
+  }
 
   const limit = PLAN_LIMITS[user.plan] ?? 5;
 
