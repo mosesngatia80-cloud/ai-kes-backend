@@ -4,16 +4,19 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const OpenAI = require("openai");
+const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 /* =========================
-   IN-MEMORY USERS (TEMP)
-   Later → PostgreSQL
+   DATABASE (POSTGRES)
 ========================= */
-const users = [];
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
 /* =========================
    PLAN LIMITS
@@ -36,9 +39,7 @@ const openai = new OpenAI({
 ========================= */
 function auth(req, res, next) {
   const header = req.headers.authorization;
-  if (!header) {
-    return res.status(401).json({ message: "Missing token" });
-  }
+  if (!header) return res.status(401).json({ message: "Missing token" });
 
   const token = header.split(" ")[1];
   try {
@@ -54,7 +55,7 @@ function auth(req, res, next) {
    ROOT
 ========================= */
 app.get("/", (req, res) => {
-  res.send("AI KES APP API RUNNING 🚀 (DAY 7 MODE)");
+  res.send("AI KES APP API RUNNING 🚀 (DB MODE)");
 });
 
 /* =========================
@@ -62,25 +63,24 @@ app.get("/", (req, res) => {
 ========================= */
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-
-  if (!email || !password) {
+  if (!email || !password)
     return res.status(400).json({ message: "Email and password required" });
-  }
 
-  if (users.find(u => u.email === email)) {
+  const existing = await pool.query(
+    "SELECT id FROM users WHERE email=$1",
+    [email]
+  );
+  if (existing.rows.length > 0)
     return res.status(400).json({ message: "User already exists" });
-  }
 
   const hashed = await bcrypt.hash(password, 10);
 
-  users.push({
-    email,
-    password: hashed,
-    plan: "free",
-    messagesUsed: 0
-  });
+  await pool.query(
+    "INSERT INTO users (email, password) VALUES ($1,$2)",
+    [email, hashed]
+  );
 
-  res.json({ message: "User registered (free plan)" });
+  res.json({ message: "User registered (DB-backed)" });
 });
 
 /* =========================
@@ -89,18 +89,20 @@ app.post("/api/register", async (req, res) => {
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
-  const user = users.find(u => u.email === email);
-  if (!user) {
-    return res.status(401).json({ message: "Invalid credentials" });
-  }
+  const result = await pool.query(
+    "SELECT id, password FROM users WHERE email=$1",
+    [email]
+  );
 
-  const ok = await bcrypt.compare(password, user.password);
-  if (!ok) {
+  if (result.rows.length === 0)
     return res.status(401).json({ message: "Invalid credentials" });
-  }
+
+  const user = result.rows[0];
+  const ok = await bcrypt.compare(password, user.password);
+  if (!ok) return res.status(401).json({ message: "Invalid credentials" });
 
   const token = jwt.sign(
-    { email },
+    { id: user.id, email },
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
@@ -111,43 +113,44 @@ app.post("/api/login", async (req, res) => {
 /* =========================
    MANUAL UPGRADE (ADMIN)
 ========================= */
-app.post("/api/upgrade", (req, res) => {
+app.post("/api/upgrade", async (req, res) => {
   const { email, plan } = req.body;
-
   const validPlans = ["free", "basic", "pro"];
-  if (!validPlans.includes(plan)) {
+  if (!validPlans.includes(plan))
     return res.status(400).json({ message: "Invalid plan" });
-  }
 
-  const user = users.find(u => u.email === email);
-  if (!user) {
+  const result = await pool.query(
+    "UPDATE users SET plan=$1, messages_used=0 WHERE email=$2 RETURNING email, plan",
+    [plan, email]
+  );
+
+  if (result.rowCount === 0)
     return res.status(404).json({ message: "User not found" });
-  }
-
-  user.plan = plan;
-  user.messagesUsed = 0; // reset usage on upgrade
 
   res.json({
     message: `User upgraded to ${plan}`,
-    email: user.email,
-    plan: user.plan
+    user: result.rows[0]
   });
 });
 
 /* =========================
-   CHAT (PLAN-AWARE MODE)
+   CHAT (DB + PLAN AWARE)
 ========================= */
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
 
-  const user = users.find(u => u.email === req.user.email);
-  if (!user) {
-    return res.status(401).json({ message: "User not found" });
-  }
+  const result = await pool.query(
+    "SELECT id, plan, messages_used FROM users WHERE id=$1",
+    [req.user.id]
+  );
 
+  if (result.rows.length === 0)
+    return res.status(401).json({ message: "User not found" });
+
+  const user = result.rows[0];
   const limit = PLAN_LIMITS[user.plan] ?? 5;
 
-  if (user.messagesUsed >= limit) {
+  if (user.messages_used >= limit) {
     return res.status(403).json({
       message: "Free limit reached. Upgrade to continue.",
       plan: user.plan,
@@ -162,22 +165,25 @@ app.post("/api/chat", auth, async (req, res) => {
         {
           role: "system",
           content:
-            "You are a friendly, concise assistant for students, hustlers, and small businesses in Kenya. Be clear, practical, and helpful."
+            "You are a friendly, concise assistant for students, hustlers, and small businesses in Kenya."
         },
         { role: "user", content: message }
-      ],
+      ]
     });
 
-    user.messagesUsed += 1;
+    await pool.query(
+      "UPDATE users SET messages_used = messages_used + 1 WHERE id=$1",
+      [user.id]
+    );
 
     res.json({
       reply: completion.choices[0].message.content,
       messagesLeft:
-        limit === Infinity ? "unlimited" : limit - user.messagesUsed,
+        limit === Infinity ? "unlimited" : limit - (user.messages_used + 1),
       plan: user.plan
     });
   } catch (err) {
-    console.error("OPENAI ERROR:", err.message);
+    console.error("AI ERROR:", err.message);
     res.status(500).json({ message: "AI service error" });
   }
 });
