@@ -38,6 +38,7 @@ app.post("/api/register", async (req, res) => {
 
   const hashed = await bcrypt.hash(password, 10);
   users.push({ email, password: hashed, messagesLeft: 5 });
+
   res.json({ message: "User registered" });
 });
 
@@ -59,7 +60,7 @@ app.post("/api/login", async (req, res) => {
   res.json({ token });
 });
 
-// -------------------- CHAT (REAL AI, v6 CORRECT) --------------------
+// -------------------- CHAT (REAL AI – FIXED) --------------------
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
   const user = users.find(u => u.email === req.user.email);
@@ -76,9 +77,13 @@ app.post("/api/chat", auth, async (req, res) => {
       max_output_tokens: 120
     });
 
-    const reply = response.output_text;
+    // ✅ CORRECT WAY TO READ TEXT
+    const reply =
+      response.output?.[0]?.content?.[0]?.text ||
+      "Sorry, I couldn’t generate a response.";
 
     user.messagesLeft -= 1;
+
     res.json({ reply, messagesLeft: user.messagesLeft });
 
   } catch (err) {
