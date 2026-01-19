@@ -27,18 +27,14 @@ app.get("/", (req, res) => {
 // -------------------- REGISTER --------------------
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password required" });
   }
-
   if (users.find(u => u.email === email)) {
     return res.status(400).json({ message: "User already exists" });
   }
-
   const hashed = await bcrypt.hash(password, 10);
   users.push({ email, password: hashed, messagesLeft: 5 });
-
   res.json({ message: "User registered" });
 });
 
@@ -46,21 +42,18 @@ app.post("/api/register", async (req, res) => {
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
   const user = users.find(u => u.email === email);
-
   if (!user || !(await bcrypt.compare(password, user.password))) {
     return res.status(401).json({ message: "Invalid credentials" });
   }
-
   const token = jwt.sign(
     { email },
     process.env.JWT_SECRET || "devsecret",
     { expiresIn: "7d" }
   );
-
   res.json({ token });
 });
 
-// -------------------- CHAT (REAL AI – FIXED) --------------------
+// -------------------- CHAT (REAL AI – FINAL FIX) --------------------
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
   const user = users.find(u => u.email === req.user.email);
@@ -72,18 +65,16 @@ app.post("/api/chat", auth, async (req, res) => {
 
   try {
     const response = await client.responses.create({
-      model: "llama3-8b-8192",
+      model: "llama3-70b-8192",   // ✅ FIXED MODEL
       input: message,
       max_output_tokens: 120
     });
 
-    // ✅ CORRECT WAY TO READ TEXT
     const reply =
       response.output?.[0]?.content?.[0]?.text ||
       "Sorry, I couldn’t generate a response.";
 
     user.messagesLeft -= 1;
-
     res.json({ reply, messagesLeft: user.messagesLeft });
 
   } catch (err) {
