@@ -10,9 +10,19 @@ app.use(cors());
 app.use(express.json());
 
 /* =========================
-   IN-MEMORY USERS
+   IN-MEMORY USERS (TEMP)
+   Day 7 → DB
 ========================= */
 const users = [];
+
+/* =========================
+   PLAN LIMITS (DAY 6)
+========================= */
+const PLAN_LIMITS = {
+  free: 5,
+  basic: 100,
+  pro: 1000 // soft infinity
+};
 
 /* =========================
    OPENAI CLIENT
@@ -42,7 +52,7 @@ function auth(req, res, next) {
    ROOT
 ========================= */
 app.get("/", (req, res) => {
-  res.send("AI KES APP API RUNNING 🚀 (OPENAI MODE)");
+  res.send("AI KES APP API RUNNING 🚀 (DAY 6 MODE)");
 });
 
 /* =========================
@@ -57,13 +67,15 @@ app.post("/api/register", async (req, res) => {
     return res.status(400).json({ message: "User already exists" });
 
   const hashed = await bcrypt.hash(password, 10);
+
   users.push({
     email,
     password: hashed,
-    messagesLeft: 5,
+    plan: "free",
+    messagesUsed: 0,
   });
 
-  res.json({ message: "User registered" });
+  res.json({ message: "User registered (free plan)" });
 });
 
 /* =========================
@@ -87,33 +99,47 @@ app.post("/api/login", async (req, res) => {
 });
 
 /* =========================
-   CHAT (REAL AI)
+   CHAT (PLAN-AWARE MODE)
 ========================= */
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
   const user = users.find(u => u.email === req.user.email);
 
   if (!user) return res.status(401).json({ message: "User not found" });
-  if (user.messagesLeft <= 0)
-    return res.status(403).json({ message: "Usage limit reached" });
+
+  const limit = PLAN_LIMITS[user.plan] ?? 5;
+
+  if (user.messagesUsed >= limit) {
+    return res.status(403).json({
+      message: "Free limit reached. Upgrade to continue.",
+      plan: user.plan,
+      limit
+    });
+  }
 
   try {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        { role: "system", content: "You are a friendly helpful assistant." },
+        {
+          role: "system",
+          content:
+            "You are a friendly, concise assistant for students, hustlers, and small businesses in Kenya. Be clear, practical, and helpful."
+        },
         { role: "user", content: message }
       ],
     });
 
-    user.messagesLeft -= 1;
+    user.messagesUsed += 1;
 
     res.json({
       reply: completion.choices[0].message.content,
-      messagesLeft: user.messagesLeft,
+      messagesLeft:
+        limit === Infinity ? "unlimited" : limit - user.messagesUsed,
+      plan: user.plan
     });
   } catch (err) {
-    console.error("OPENAI ERROR:", err);
+    console.error("OPENAI ERROR:", err.message);
     res.status(500).json({ message: "AI service error" });
   }
 });
