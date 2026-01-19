@@ -4,87 +4,121 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const OpenAI = require("openai");
-const auth = require("./auth");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// -------------------- AI CLIENT (GROQ) --------------------
-const client = new OpenAI({
-  apiKey: process.env.AI_API_KEY,
-  baseURL: "https://api.groq.com/openai/v1"
-});
-
-// -------------------- IN-MEMORY USERS --------------------
+/* =========================
+   IN-MEMORY USER STORE
+========================= */
 const users = [];
 
-// -------------------- ROOT --------------------
-app.get("/", (req, res) => {
-  res.send("AI KES APP API RUNNING 🚀 (REAL AI MODE)");
+/* =========================
+   OPENAI CLIENT
+========================= */
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-// -------------------- REGISTER --------------------
+/* =========================
+   AUTH MIDDLEWARE
+========================= */
+function auth(req, res, next) {
+  const header = req.headers.authorization;
+  if (!header) return res.status(401).json({ message: "Missing token" });
+
+  const token = header.split(" ")[1];
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch {
+    res.status(401).json({ message: "Invalid or expired token" });
+  }
+}
+
+/* =========================
+   ROOT
+========================= */
+app.get("/", (req, res) => {
+  res.send("AI KES APP API RUNNING 🚀 (OPENAI MODE)");
+});
+
+/* =========================
+   REGISTER
+========================= */
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password) {
+  if (!email || !password)
     return res.status(400).json({ message: "Email and password required" });
-  }
-  if (users.find(u => u.email === email)) {
+
+  if (users.find(u => u.email === email))
     return res.status(400).json({ message: "User already exists" });
-  }
+
   const hashed = await bcrypt.hash(password, 10);
-  users.push({ email, password: hashed, messagesLeft: 5 });
+  users.push({
+    email,
+    password: hashed,
+    messagesLeft: 5, // FREE TRIAL
+  });
+
   res.json({ message: "User registered" });
 });
 
-// -------------------- LOGIN --------------------
+/* =========================
+   LOGIN
+========================= */
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
   const user = users.find(u => u.email === email);
-  if (!user || !(await bcrypt.compare(password, user.password))) {
-    return res.status(401).json({ message: "Invalid credentials" });
-  }
+  if (!user) return res.status(401).json({ message: "Invalid credentials" });
+
+  const ok = await bcrypt.compare(password, user.password);
+  if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+
   const token = jwt.sign(
     { email },
-    process.env.JWT_SECRET || "devsecret",
+    process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
+
   res.json({ token });
 });
 
-// -------------------- CHAT (REAL AI – FINAL FIX) --------------------
+/* =========================
+   CHAT (REAL AI)
+========================= */
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
   const user = users.find(u => u.email === req.user.email);
 
   if (!user) return res.status(401).json({ message: "User not found" });
-  if (user.messagesLeft <= 0) {
-    return res.status(403).json({ message: "Usage limit reached. Please subscribe." });
-  }
+  if (user.messagesLeft <= 0)
+    return res.status(403).json({ message: "Usage limit reached" });
 
   try {
-    const response = await client.responses.create({
-      model: "llama3-70b-8192",   // ✅ FIXED MODEL
-      input: message,
-      max_output_tokens: 120
+    const completion = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [{ role: "user", content: message }],
     });
 
-    const reply =
-      response.output?.[0]?.content?.[0]?.text ||
-      "Sorry, I couldn’t generate a response.";
-
     user.messagesLeft -= 1;
-    res.json({ reply, messagesLeft: user.messagesLeft });
 
+    res.json({
+      reply: completion.choices[0].message.content,
+      messagesLeft: user.messagesLeft,
+    });
   } catch (err) {
-    console.error("AI ERROR:", err);
+    console.error("OpenAI error:", err.message);
     res.status(500).json({ message: "AI service error" });
   }
 });
 
-// -------------------- START SERVER --------------------
-const PORT = process.env.PORT;
+/* =========================
+   START SERVER
+========================= */
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log("Server running on port", PORT);
 });
