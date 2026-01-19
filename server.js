@@ -3,23 +3,23 @@ const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const auth = require("./auth");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// TEMP IN-MEMORY USERS
+// IN-MEMORY USERS
 const users = [];
 
-// ROOT ROUTE (VERY IMPORTANT FOR RENDER)
+// ROOT
 app.get("/", (req, res) => {
-  res.status(200).send("AI KES APP API RUNNING 🚀 (NO DB MODE)");
+  res.send("AI KES APP API RUNNING 🚀 (NO DB MODE)");
 });
 
 // REGISTER
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password required" });
   }
@@ -29,7 +29,11 @@ app.post("/api/register", async (req, res) => {
   }
 
   const hashed = await bcrypt.hash(password, 10);
-  users.push({ email, password: hashed });
+  users.push({
+    email,
+    password: hashed,
+    messagesLeft: 5 // FREE TRIAL
+  });
 
   res.json({ message: "User registered" });
 });
@@ -57,7 +61,31 @@ app.post("/api/login", async (req, res) => {
   res.json({ token });
 });
 
-// 🚨 LISTEN IMMEDIATELY (KEY FIX)
+// CHAT (PROTECTED)
+app.post("/api/chat", auth, (req, res) => {
+  const { message } = req.body;
+  const user = users.find(u => u.email === req.user.email);
+
+  if (!user) {
+    return res.status(401).json({ message: "User not found" });
+  }
+
+  if (user.messagesLeft <= 0) {
+    return res.status(403).json({ message: "Usage limit reached. Please subscribe." });
+  }
+
+  user.messagesLeft -= 1;
+
+  // PLACEHOLDER AI RESPONSE
+  const reply = `🤖 AI says: I received your message — "${message}"`;
+
+  res.json({
+    reply,
+    messagesLeft: user.messagesLeft
+  });
+});
+
+// START SERVER
 const PORT = process.env.PORT;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
