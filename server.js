@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 /* =========================
-   IN-MEMORY USER STORE
+   IN-MEMORY USERS
 ========================= */
 const users = [];
 
@@ -34,7 +34,7 @@ function auth(req, res, next) {
     req.user = decoded;
     next();
   } catch {
-    res.status(401).json({ message: "Invalid or expired token" });
+    return res.status(401).json({ message: "Invalid or expired token" });
   }
 }
 
@@ -60,7 +60,7 @@ app.post("/api/register", async (req, res) => {
   users.push({
     email,
     password: hashed,
-    messagesLeft: 5, // FREE TRIAL
+    messagesLeft: 5,
   });
 
   res.json({ message: "User registered" });
@@ -99,8 +99,11 @@ app.post("/api/chat", auth, async (req, res) => {
 
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
-      messages: [{ role: "user", content: message }],
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: "You are a friendly helpful assistant." },
+        { role: "user", content: message }
+      ],
     });
 
     user.messagesLeft -= 1;
@@ -110,7 +113,7 @@ app.post("/api/chat", auth, async (req, res) => {
       messagesLeft: user.messagesLeft,
     });
   } catch (err) {
-    console.error("OpenAI error:", err.message);
+    console.error("OPENAI ERROR:", err);
     res.status(500).json({ message: "AI service error" });
   }
 });
