@@ -8,52 +8,32 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/*
-  TEMP IN-MEMORY STORE
-  (will be replaced by real DB later)
-*/
+// TEMP IN-MEMORY USERS
 const users = [];
 
-/* =====================
-   HEALTH CHECK
-===================== */
+// ROOT HEALTH CHECK
 app.get("/", (req, res) => {
   res.send("AI KES APP API RUNNING 🚀 (NO DB MODE)");
 });
 
-/* =====================
-   REGISTER
-===================== */
+// REGISTER
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password required" });
   }
 
-  const exists = users.find(u => u.email === email);
-  if (exists) {
+  if (users.find(u => u.email === email)) {
     return res.status(400).json({ message: "User already exists" });
   }
 
   const hashed = await bcrypt.hash(password, 10);
+  users.push({ email, password: hashed });
 
-  const user = {
-    id: users.length + 1,
-    email,
-    password: hashed,
-    plan: "free",
-    messagesLeft: 0
-  };
-
-  users.push(user);
-
-  res.json({ message: "User registered successfully" });
+  res.json({ message: "User registered" });
 });
 
-/* =====================
-   LOGIN
-===================== */
+// LOGIN
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -68,7 +48,7 @@ app.post("/api/login", async (req, res) => {
   }
 
   const token = jwt.sign(
-    { id: user.id, email: user.email },
+    { email },
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
