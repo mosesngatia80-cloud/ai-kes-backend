@@ -37,27 +37,16 @@ app.post("/api/register", async (req, res) => {
   }
 
   const hashed = await bcrypt.hash(password, 10);
-
-  users.push({
-    email,
-    password: hashed,
-    messagesLeft: 5
-  });
-
+  users.push({ email, password: hashed, messagesLeft: 5 });
   res.json({ message: "User registered" });
 });
 
 // -------------------- LOGIN --------------------
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
-
   const user = users.find(u => u.email === email);
-  if (!user) {
-    return res.status(401).json({ message: "Invalid credentials" });
-  }
 
-  const ok = await bcrypt.compare(password, user.password);
-  if (!ok) {
+  if (!user || !(await bcrypt.compare(password, user.password))) {
     return res.status(401).json({ message: "Invalid credentials" });
   }
 
@@ -70,40 +59,30 @@ app.post("/api/login", async (req, res) => {
   res.json({ token });
 });
 
-// -------------------- CHAT (REAL AI) --------------------
+// -------------------- CHAT (REAL AI, v6 CORRECT) --------------------
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
   const user = users.find(u => u.email === req.user.email);
 
-  if (!user) {
-    return res.status(401).json({ message: "User not found" });
-  }
-
+  if (!user) return res.status(401).json({ message: "User not found" });
   if (user.messagesLeft <= 0) {
     return res.status(403).json({ message: "Usage limit reached. Please subscribe." });
   }
 
   try {
-    const completion = await client.chat.completions.create({
+    const response = await client.responses.create({
       model: "llama3-8b-8192",
-      messages: [
-        { role: "system", content: "You are a friendly, helpful assistant." },
-        { role: "user", content: message }
-      ],
-      max_tokens: 120
+      input: message,
+      max_output_tokens: 120
     });
 
-    const reply = completion.choices[0].message.content;
+    const reply = response.output_text;
 
     user.messagesLeft -= 1;
-
-    res.json({
-      reply,
-      messagesLeft: user.messagesLeft
-    });
+    res.json({ reply, messagesLeft: user.messagesLeft });
 
   } catch (err) {
-    console.error("AI ERROR:", err.message);
+    console.error("AI ERROR:", err);
     res.status(500).json({ message: "AI service error" });
   }
 });
