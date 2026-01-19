@@ -3,23 +3,31 @@ const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const OpenAI = require("openai");
 const auth = require("./auth");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// IN-MEMORY USERS
-const users = [];
-
-// ROOT
-app.get("/", (req, res) => {
-  res.send("AI KES APP API RUNNING 🚀 (NO DB MODE)");
+// -------------------- AI CLIENT (GROQ) --------------------
+const client = new OpenAI({
+  apiKey: process.env.AI_API_KEY,
+  baseURL: "https://api.groq.com/openai/v1"
 });
 
-// REGISTER
+// -------------------- IN-MEMORY USERS --------------------
+const users = [];
+
+// -------------------- ROOT --------------------
+app.get("/", (req, res) => {
+  res.send("AI KES APP API RUNNING 🚀 (REAL AI MODE)");
+});
+
+// -------------------- REGISTER --------------------
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
+
   if (!email || !password) {
     return res.status(400).json({ message: "Email and password required" });
   }
@@ -29,16 +37,17 @@ app.post("/api/register", async (req, res) => {
   }
 
   const hashed = await bcrypt.hash(password, 10);
+
   users.push({
     email,
     password: hashed,
-    messagesLeft: 5 // FREE TRIAL
+    messagesLeft: 5
   });
 
   res.json({ message: "User registered" });
 });
 
-// LOGIN
+// -------------------- LOGIN --------------------
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -61,8 +70,8 @@ app.post("/api/login", async (req, res) => {
   res.json({ token });
 });
 
-// CHAT (PROTECTED)
-app.post("/api/chat", auth, (req, res) => {
+// -------------------- CHAT (REAL AI) --------------------
+app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
   const user = users.find(u => u.email === req.user.email);
 
@@ -74,18 +83,32 @@ app.post("/api/chat", auth, (req, res) => {
     return res.status(403).json({ message: "Usage limit reached. Please subscribe." });
   }
 
-  user.messagesLeft -= 1;
+  try {
+    const completion = await client.chat.completions.create({
+      model: "llama3-8b-8192",
+      messages: [
+        { role: "system", content: "You are a friendly, helpful assistant." },
+        { role: "user", content: message }
+      ],
+      max_tokens: 120
+    });
 
-  // PLACEHOLDER AI RESPONSE
-  const reply = `🤖 AI says: I received your message — "${message}"`;
+    const reply = completion.choices[0].message.content;
 
-  res.json({
-    reply,
-    messagesLeft: user.messagesLeft
-  });
+    user.messagesLeft -= 1;
+
+    res.json({
+      reply,
+      messagesLeft: user.messagesLeft
+    });
+
+  } catch (err) {
+    console.error("AI ERROR:", err.message);
+    res.status(500).json({ message: "AI service error" });
+  }
 });
 
-// START SERVER
+// -------------------- START SERVER --------------------
 const PORT = process.env.PORT;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
