@@ -4,28 +4,21 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const OpenAI = require("openai");
-const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 /* =========================
-   DATABASE (POSTGRES)
+   IN-MEMORY USERS (TEMP)
+   Day 8 → DB persistence
 ========================= */
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
-});
+const users = [];
 
 /* =========================
-   PLAN LIMITS
+   FREE PLAN LIMIT
 ========================= */
-const PLAN_LIMITS = {
-  free: 5,
-  basic: 100,
-  pro: 1000 // soft infinity
-};
+const FREE_LIMIT = 10;
 
 /* =========================
    OPENAI CLIENT
@@ -39,7 +32,9 @@ const openai = new OpenAI({
 ========================= */
 function auth(req, res, next) {
   const header = req.headers.authorization;
-  if (!header) return res.status(401).json({ message: "Missing token" });
+  if (!header) {
+    return res.status(401).json({ message: "Missing token" });
+  }
 
   const token = header.split(" ")[1];
   try {
@@ -55,7 +50,7 @@ function auth(req, res, next) {
    ROOT
 ========================= */
 app.get("/", (req, res) => {
-  res.send("AI KES APP API RUNNING 🚀 (DB MODE)");
+  res.send("AI KES APP API RUNNING 🚀 (UNLIMITED FAIR USE MODE)");
 });
 
 /* =========================
@@ -63,24 +58,28 @@ app.get("/", (req, res) => {
 ========================= */
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password)
+  if (!email || !password) {
     return res.status(400).json({ message: "Email and password required" });
+  }
 
-  const existing = await pool.query(
-    "SELECT id FROM users WHERE email=$1",
-    [email]
-  );
-  if (existing.rows.length > 0)
+  if (users.find(u => u.email === email)) {
     return res.status(400).json({ message: "User already exists" });
+  }
 
   const hashed = await bcrypt.hash(password, 10);
 
-  await pool.query(
-    "INSERT INTO users (email, password) VALUES ($1,$2)",
-    [email, hashed]
-  );
+  users.push({
+    email,
+    password: hashed,
+    plan: "free",
+    messagesUsed: 0,
+  });
 
-  res.json({ message: "User registered (DB-backed)" });
+  res.json({
+    message: "User registered",
+    plan: "free",
+    freeMessages: FREE_LIMIT,
+  });
 });
 
 /* =========================
@@ -88,73 +87,61 @@ app.post("/api/register", async (req, res) => {
 ========================= */
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
+  const user = users.find(u => u.email === email);
 
-  const result = await pool.query(
-    "SELECT id, password FROM users WHERE email=$1",
-    [email]
-  );
-
-  if (result.rows.length === 0)
+  if (!user) {
     return res.status(401).json({ message: "Invalid credentials" });
+  }
 
-  const user = result.rows[0];
   const ok = await bcrypt.compare(password, user.password);
-  if (!ok) return res.status(401).json({ message: "Invalid credentials" });
+  if (!ok) {
+    return res.status(401).json({ message: "Invalid credentials" });
+  }
 
   const token = jwt.sign(
-    { id: user.id, email },
+    { email },
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
 
-  res.json({ token });
+  res.json({ token, plan: user.plan });
 });
 
 /* =========================
-   MANUAL UPGRADE (ADMIN)
+   MANUAL UPGRADE (TEMP)
 ========================= */
-app.post("/api/upgrade", async (req, res) => {
+app.post("/api/upgrade", (req, res) => {
   const { email, plan } = req.body;
-  const validPlans = ["free", "basic", "pro"];
-  if (!validPlans.includes(plan))
-    return res.status(400).json({ message: "Invalid plan" });
+  const user = users.find(u => u.email === email);
 
-  const result = await pool.query(
-    "UPDATE users SET plan=$1, messages_used=0 WHERE email=$2 RETURNING email, plan",
-    [plan, email]
-  );
-
-  if (result.rowCount === 0)
+  if (!user) {
     return res.status(404).json({ message: "User not found" });
+  }
 
-  res.json({
-    message: `User upgraded to ${plan}`,
-    user: result.rows[0]
-  });
+  if (!["basic", "pro"].includes(plan)) {
+    return res.status(400).json({ message: "Invalid plan" });
+  }
+
+  user.plan = plan;
+  res.json({ message: "User upgraded", email, plan });
 });
 
 /* =========================
-   CHAT (DB + PLAN AWARE)
+   CHAT (FAIR USE LOGIC)
 ========================= */
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
+  const user = users.find(u => u.email === req.user.email);
 
-  const result = await pool.query(
-    "SELECT id, plan, messages_used FROM users WHERE id=$1",
-    [req.user.id]
-  );
-
-  if (result.rows.length === 0)
+  if (!user) {
     return res.status(401).json({ message: "User not found" });
+  }
 
-  const user = result.rows[0];
-  const limit = PLAN_LIMITS[user.plan] ?? 5;
-
-  if (user.messages_used >= limit) {
+  // FREE PLAN HARD LIMIT
+  if (user.plan === "free" && user.messagesUsed >= FREE_LIMIT) {
     return res.status(403).json({
       message: "Free limit reached. Upgrade to continue.",
-      plan: user.plan,
-      limit
+      plan: "free",
     });
   }
 
@@ -165,25 +152,29 @@ app.post("/api/chat", auth, async (req, res) => {
         {
           role: "system",
           content:
-            "You are a friendly, concise assistant for students, hustlers, and small businesses in Kenya."
+            "You are a friendly, clear, and practical assistant for Kenyan users. Keep answers helpful and concise."
         },
         { role: "user", content: message }
-      ]
+      ],
+      // COST CONTROL (VERY IMPORTANT)
+      max_tokens: user.plan === "pro" ? 600 : 300,
     });
 
-    await pool.query(
-      "UPDATE users SET messages_used = messages_used + 1 WHERE id=$1",
-      [user.id]
-    );
+    user.messagesUsed += 1;
 
-    res.json({
+    const response = {
       reply: completion.choices[0].message.content,
-      messagesLeft:
-        limit === Infinity ? "unlimited" : limit - (user.messages_used + 1),
-      plan: user.plan
-    });
+      plan: user.plan,
+    };
+
+    // ONLY SHOW COUNT FOR FREE USERS
+    if (user.plan === "free") {
+      response.messagesLeft = FREE_LIMIT - user.messagesUsed;
+    }
+
+    res.json(response);
   } catch (err) {
-    console.error("AI ERROR:", err.message);
+    console.error("OPENAI ERROR:", err.message);
     res.status(500).json({ message: "AI service error" });
   }
 });
