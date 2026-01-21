@@ -182,3 +182,47 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🚀 AI-KES running on port", PORT);
 });
+
+/* =========================
+   M-PESA C2B CONFIRMATION (AI KES)
+   BillRef format: AIKES-email@example.com
+========================= */
+app.post("/api/mpesa/c2b/confirmation", async (req, res) => {
+  console.log("📥 MPESA C2B CALLBACK RECEIVED");
+  console.log(JSON.stringify(req.body, null, 2));
+
+  const {
+    TransID,
+    TransAmount,
+    BillRefNumber
+  } = req.body;
+
+  // Ignore non–AI KES payments
+  if (!BillRefNumber || !BillRefNumber.startsWith("AIKES-")) {
+    console.log("❌ Not an AI KES payment");
+    return res.json({ ResultCode: 0, ResultDesc: "Ignored" });
+  }
+
+  const email = BillRefNumber.replace("AIKES-", "").trim();
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+  try {
+    await pool.query(
+      `UPDATE users
+       SET plan='pro',
+           messages_used=0
+       WHERE email=$1`,
+      [email]
+    );
+
+    console.log("✅ AI KES PRO activated for:", email);
+  } catch (err) {
+    console.error("❌ DB ERROR:", err.message);
+  }
+
+  // Always return success to Safaricom
+  return res.json({
+    ResultCode: 0,
+    ResultDesc: "Accepted"
+  });
+});
