@@ -4,31 +4,33 @@ const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const OpenAI = require("openai");
+const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "20kb" }));
 
 /* =========================
-   IN-MEMORY USERS (TEMP)
-   Day 8 → DB persistence
+   DATABASE
 ========================= */
-const users = [];
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL
+});
 
 /* =========================
-   FREE PLAN LIMIT
+   CONFIG
 ========================= */
 const FREE_LIMIT = 10;
 
 /* =========================
-   OPENAI CLIENT
+   OPENAI
 ========================= */
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY
 });
 
 /* =========================
-   AUTH MIDDLEWARE
+   AUTH
 ========================= */
 function auth(req, res, next) {
   const header = req.headers.authorization;
@@ -36,10 +38,9 @@ function auth(req, res, next) {
     return res.status(401).json({ message: "Missing token" });
   }
 
-  const token = header.split(" ")[1];
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    const token = header.split(" ")[1];
+    req.user = jwt.verify(token, process.env.JWT_SECRET);
     next();
   } catch {
     return res.status(401).json({ message: "Invalid or expired token" });
@@ -49,8 +50,8 @@ function auth(req, res, next) {
 /* =========================
    ROOT
 ========================= */
-app.get("/", (req, res) => {
-  res.send("AI KES APP API RUNNING 🚀 (UNLIMITED FAIR USE MODE)");
+app.get("/", (_, res) => {
+  res.send("AI KES API 🚀 LIVE");
 });
 
 /* =========================
@@ -62,24 +63,16 @@ app.post("/api/register", async (req, res) => {
     return res.status(400).json({ message: "Email and password required" });
   }
 
-  if (users.find(u => u.email === email)) {
-    return res.status(400).json({ message: "User already exists" });
-  }
-
   const hashed = await bcrypt.hash(password, 10);
 
-  users.push({
-    email,
-    password: hashed,
-    plan: "free",
-    messagesUsed: 0,
-  });
+  await pool.query(
+    `INSERT INTO users (email, password)
+     VALUES ($1, $2)
+     ON CONFLICT (email) DO NOTHING`,
+    [email, hashed]
+  );
 
-  res.json({
-    message: "User registered",
-    plan: "free",
-    freeMessages: FREE_LIMIT,
-  });
+  res.json({ message: "User registered", plan: "free" });
 });
 
 /* =========================
@@ -87,19 +80,24 @@ app.post("/api/register", async (req, res) => {
 ========================= */
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
-  const user = users.find(u => u.email === email);
 
-  if (!user) {
+  const { rows } = await pool.query(
+    "SELECT * FROM users WHERE email=$1",
+    [email]
+  );
+
+  if (!rows.length) {
     return res.status(401).json({ message: "Invalid credentials" });
   }
 
+  const user = rows[0];
   const ok = await bcrypt.compare(password, user.password);
   if (!ok) {
     return res.status(401).json({ message: "Invalid credentials" });
   }
 
   const token = jwt.sign(
-    { email },
+    { email: user.email },
     process.env.JWT_SECRET,
     { expiresIn: "7d" }
   );
@@ -108,81 +106,79 @@ app.post("/api/login", async (req, res) => {
 });
 
 /* =========================
-   MANUAL UPGRADE (TEMP)
+   PROFILE
 ========================= */
-app.post("/api/upgrade", (req, res) => {
-  const { email, plan } = req.body;
-  const user = users.find(u => u.email === email);
+app.get("/api/me", auth, async (req, res) => {
+  const { rows } = await pool.query(
+    "SELECT email, plan, messages_used FROM users WHERE email=$1",
+    [req.user.email]
+  );
 
-  if (!user) {
+  if (!rows.length) {
     return res.status(404).json({ message: "User not found" });
   }
 
-  if (!["basic", "pro"].includes(plan)) {
-    return res.status(400).json({ message: "Invalid plan" });
-  }
+  const user = rows[0];
 
-  user.plan = plan;
-  res.json({ message: "User upgraded", email, plan });
+  res.json({
+    email: user.email,
+    plan: user.plan,
+    messagesUsed: user.messages_used,
+    messagesLeft:
+      user.plan === "free"
+        ? Math.max(FREE_LIMIT - user.messages_used, 0)
+        : "unlimited"
+  });
 });
 
 /* =========================
-   CHAT (FAIR USE LOGIC)
+   CHAT
 ========================= */
 app.post("/api/chat", auth, async (req, res) => {
   const { message } = req.body;
-  const user = users.find(u => u.email === req.user.email);
-
-  if (!user) {
-    return res.status(401).json({ message: "User not found" });
-  }
-
-  // FREE PLAN HARD LIMIT
-  if (user.plan === "free" && user.messagesUsed >= FREE_LIMIT) {
-    return res.status(403).json({
-      message: "Free limit reached. Upgrade to continue.",
-      plan: "free",
-    });
-  }
 
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a friendly, clear, and practical assistant for Kenyan users. Keep answers helpful and concise."
-        },
-        { role: "user", content: message }
-      ],
-      // COST CONTROL (VERY IMPORTANT)
-      max_tokens: user.plan === "pro" ? 600 : 300,
-    });
+    const { rows } = await pool.query(
+      "SELECT * FROM users WHERE email=$1",
+      [req.user.email]
+    );
 
-    user.messagesUsed += 1;
-
-    const response = {
-      reply: completion.choices[0].message.content,
-      plan: user.plan,
-    };
-
-    // ONLY SHOW COUNT FOR FREE USERS
-    if (user.plan === "free") {
-      response.messagesLeft = FREE_LIMIT - user.messagesUsed;
+    if (!rows.length) {
+      return res.status(401).json({ message: "User not found" });
     }
 
-    res.json(response);
+    const user = rows[0];
+
+    if (user.plan === "free" && user.messages_used >= FREE_LIMIT) {
+      return res.status(403).json({ message: "Free limit reached" });
+    }
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: message }]
+    });
+
+    await pool.query(
+      "UPDATE users SET messages_used = messages_used + 1 WHERE email=$1",
+      [user.email]
+    );
+
+    res.json({
+      reply: completion.choices[0].message.content
+    });
   } catch (err) {
-    console.error("OPENAI ERROR:", err.message);
-    res.status(500).json({ message: "AI service error" });
+    console.error("CHAT ERROR:", err.message);
+    res.status(500).json({
+      message: "AI service error",
+      error: err.message
+    });
   }
 });
 
 /* =========================
-   START SERVER
+   START
 ========================= */
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, "0.0.0.0", () => {
-  console.log("Server running on port", PORT);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("🚀 AI-KES running on port", PORT);
 });
