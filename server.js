@@ -167,57 +167,6 @@ app.post("/api/chat", auth, async (req, res) => {
 });
 
 /* =========================
-   MANUAL MPESA RECEIPT UPGRADE
-   Buy Goods → Till 3259778
-========================= */
-app.post("/api/upgrade/receipt", auth, async (req, res) => {
-  const { receipt, amount } = req.body;
-
-  if (!receipt || !amount)
-    return res.status(400).json({ message: "Receipt and amount required" });
-
-  if (amount < PRO_PRICE)
-    return res.status(400).json({
-      message: "Minimum upgrade is KES 200"
-    });
-
-  if (!/^[A-Z0-9]{8,12}$/.test(receipt))
-    return res.status(400).json({ message: "Invalid receipt format" });
-
-  try {
-    const used = await pool.query(
-      "SELECT id FROM payments WHERE receipt=$1",
-      [receipt]
-    );
-
-    if (used.rows.length)
-      return res.status(409).json({ message: "Receipt already used" });
-
-    await pool.query(
-      `INSERT INTO payments (email, receipt, amount)
-       VALUES ($1, $2, $3)`,
-      [req.user.email, receipt, amount]
-    );
-
-    await pool.query(
-      `UPDATE users
-       SET plan='pro',
-           messages_used=0
-       WHERE email=$1`,
-      [req.user.email]
-    );
-
-    res.json({
-      message: "Payment verified. You are now PRO 🎉",
-      plan: "pro"
-    });
-  } catch (err) {
-    console.error("UPGRADE ERROR:", err.message);
-    res.status(500).json({ message: "Upgrade failed" });
-  }
-});
-
-/* =========================
    PUBLIC PAYMENT VERIFY
 ========================= */
 app.post("/api/payments/verify", async (req, res) => {
@@ -232,6 +181,34 @@ app.post("/api/payments/verify", async (req, res) => {
     return res.status(400).json({
       message: "Minimum upgrade is KES 200"
     });
+
+  /* ====== ADDED SMS VALIDATION BLOCK (ONLY ADDITION) ====== */
+  if (req.body.message) {
+    const sms = req.body.message.toUpperCase();
+
+    if (!sms.includes("NAVUFINTECH SYSTEMS")) {
+      return res.status(400).json({
+        message: "Payment not sent to NAVUFINTECH SYSTEMS"
+      });
+    }
+
+    if (
+      !sms.includes(`KSH${amount}`) &&
+      !sms.includes(`KSH ${amount}`) &&
+      !sms.includes(`KSH${amount}.00`)
+    ) {
+      return res.status(400).json({
+        message: "Payment amount mismatch"
+      });
+    }
+
+    if (!sms.includes(receipt)) {
+      return res.status(400).json({
+        message: "Receipt not found in SMS"
+      });
+    }
+  }
+  /* ====== END ADDITION ====== */
 
   try {
     const { rows: users } = await pool.query(
@@ -313,4 +290,3 @@ app.get("/api/admin/users", async (req, res) => {
     res.status(500).json({ message: "Admin fetch failed" });
   }
 });
-
