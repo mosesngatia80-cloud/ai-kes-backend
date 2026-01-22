@@ -8,7 +8,7 @@ const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "20kb" }));
+app.use(express.json({ limit: "50kb" }));
 
 /* =========================
    DATABASE
@@ -21,6 +21,7 @@ const pool = new Pool({
    CONFIG
 ========================= */
 const FREE_LIMIT = 10;
+const PRO_MIN_AMOUNT = 200;
 
 /* =========================
    OPENAI
@@ -30,13 +31,11 @@ const openai = new OpenAI({
 });
 
 /* =========================
-   AUTH
+   AUTH MIDDLEWARE
 ========================= */
 function auth(req, res, next) {
   const header = req.headers.authorization;
-  if (!header) {
-    return res.status(401).json({ message: "Missing token" });
-  }
+  if (!header) return res.status(401).json({ message: "Missing token" });
 
   try {
     const token = header.split(" ")[1];
@@ -59,15 +58,14 @@ app.get("/", (_, res) => {
 ========================= */
 app.post("/api/register", async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password) {
+  if (!email || !password)
     return res.status(400).json({ message: "Email and password required" });
-  }
 
   const hashed = await bcrypt.hash(password, 10);
 
   await pool.query(
-    `INSERT INTO users (email, password)
-     VALUES ($1, $2)
+    `INSERT INTO users (email, password, plan, messages_used)
+     VALUES ($1, $2, 'free', 0)
      ON CONFLICT (email) DO NOTHING`,
     [email, hashed]
   );
@@ -86,15 +84,13 @@ app.post("/api/login", async (req, res) => {
     [email]
   );
 
-  if (!rows.length) {
+  if (!rows.length)
     return res.status(401).json({ message: "Invalid credentials" });
-  }
 
   const user = rows[0];
   const ok = await bcrypt.compare(password, user.password);
-  if (!ok) {
+  if (!ok)
     return res.status(401).json({ message: "Invalid credentials" });
-  }
 
   const token = jwt.sign(
     { email: user.email },
@@ -114,9 +110,8 @@ app.get("/api/me", auth, async (req, res) => {
     [req.user.email]
   );
 
-  if (!rows.length) {
+  if (!rows.length)
     return res.status(404).json({ message: "User not found" });
-  }
 
   const user = rows[0];
 
@@ -143,15 +138,13 @@ app.post("/api/chat", auth, async (req, res) => {
       [req.user.email]
     );
 
-    if (!rows.length) {
+    if (!rows.length)
       return res.status(401).json({ message: "User not found" });
-    }
 
     const user = rows[0];
 
-    if (user.plan === "free" && user.messages_used >= FREE_LIMIT) {
+    if (user.plan === "free" && user.messages_used >= FREE_LIMIT)
       return res.status(403).json({ message: "Free limit reached" });
-    }
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -163,66 +156,96 @@ app.post("/api/chat", auth, async (req, res) => {
       [user.email]
     );
 
-    res.json({
-      reply: completion.choices[0].message.content
-    });
+    res.json({ reply: completion.choices[0].message.content });
   } catch (err) {
     console.error("CHAT ERROR:", err.message);
     res.status(500).json({
-      message: "AI service error",
-      error: err.message
+      message: "AI service error"
     });
   }
 });
 
 /* =========================
-   START
-========================= */
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("🚀 AI-KES running on port", PORT);
-});
-
-/* =========================
-   M-PESA C2B CONFIRMATION (AI KES)
-   BillRef format: AIKES-email@example.com
+   C2B CONFIRMATION
+   (Till 3259778)
 ========================= */
 app.post("/api/mpesa/c2b/confirmation", async (req, res) => {
-  console.log("📥 MPESA C2B CALLBACK RECEIVED");
-  console.log(JSON.stringify(req.body, null, 2));
+  const { TransID, TransAmount, BillRefNumber } = req.body;
 
-  const {
-    TransID,
-    TransAmount,
-    BillRefNumber
-  } = req.body;
-
-  // Ignore non–AI KES payments
   if (!BillRefNumber || !BillRefNumber.startsWith("AIKES-")) {
-    console.log("❌ Not an AI KES payment");
     return res.json({ ResultCode: 0, ResultDesc: "Ignored" });
   }
 
   const email = BillRefNumber.replace("AIKES-", "").trim();
-  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  const amount = Number(TransAmount);
+
+  if (amount < PRO_MIN_AMOUNT) {
+    return res.json({ ResultCode: 0, ResultDesc: "Amount too low" });
+  }
 
   try {
     await pool.query(
       `UPDATE users
-       SET plan='pro',
-           messages_used=0
+       SET plan='pro', messages_used=0
        WHERE email=$1`,
       [email]
     );
 
-    console.log("✅ AI KES PRO activated for:", email);
+    return res.json({ ResultCode: 0, ResultDesc: "Accepted" });
   } catch (err) {
-    console.error("❌ DB ERROR:", err.message);
+    console.error("C2B ERROR:", err.message);
+    return res.json({ ResultCode: 1, ResultDesc: "Failed" });
   }
+});
 
-  // Always return success to Safaricom
-  return res.json({
-    ResultCode: 0,
-    ResultDesc: "Accepted"
-  });
+/* =========================
+   MANUAL RECEIPT VERIFICATION
+========================= */
+app.post("/api/payments/verify", async (req, res) => {
+  const { email, receipt, amount } = req.body;
+
+  if (!email || !receipt || !amount)
+    return res.status(400).json({ message: "Missing fields" });
+
+  if (amount < PRO_MIN_AMOUNT)
+    return res.status(400).json({ message: "Minimum is 200 KES" });
+
+  try {
+    const used = await pool.query(
+      "SELECT id FROM payments WHERE receipt=$1",
+      [receipt]
+    );
+
+    if (used.rows.length)
+      return res.status(409).json({ message: "Receipt already used" });
+
+    await pool.query(
+      `INSERT INTO payments (email, receipt, amount)
+       VALUES ($1, $2, $3)`,
+      [email, receipt, amount]
+    );
+
+    await pool.query(
+      `UPDATE users
+       SET plan='pro', messages_used=0
+       WHERE email=$1`,
+      [email]
+    );
+
+    res.json({
+      message: "Payment verified. PRO activated.",
+      plan: "pro"
+    });
+  } catch (err) {
+    console.error("VERIFY ERROR:", err.message);
+    res.status(500).json({ message: "Verification failed" });
+  }
+});
+
+/* =========================
+   START SERVER (ONCE)
+========================= */
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log("🚀 AI-KES running on port", PORT);
 });
