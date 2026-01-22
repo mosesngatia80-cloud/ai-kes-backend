@@ -8,7 +8,7 @@ const { Pool } = require("pg");
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: "50kb" }));
+app.use(express.json({ limit: "20kb" }));
 
 /* =========================
    DATABASE
@@ -21,7 +21,7 @@ const pool = new Pool({
    CONFIG
 ========================= */
 const FREE_LIMIT = 10;
-const PRO_MIN_AMOUNT = 200;
+const PRO_PRICE = 200;
 
 /* =========================
    OPENAI
@@ -31,7 +31,7 @@ const openai = new OpenAI({
 });
 
 /* =========================
-   AUTH MIDDLEWARE
+   AUTH
 ========================= */
 function auth(req, res, next) {
   const header = req.headers.authorization;
@@ -160,55 +160,29 @@ app.post("/api/chat", auth, async (req, res) => {
   } catch (err) {
     console.error("CHAT ERROR:", err.message);
     res.status(500).json({
-      message: "AI service error"
+      message: "AI service error",
+      error: err.message
     });
   }
 });
 
 /* =========================
-   C2B CONFIRMATION
-   (Till 3259778)
+   MANUAL MPESA RECEIPT UPGRADE
+   Buy Goods → Till 3259778
 ========================= */
-app.post("/api/mpesa/c2b/confirmation", async (req, res) => {
-  const { TransID, TransAmount, BillRefNumber } = req.body;
+app.post("/api/upgrade/receipt", auth, async (req, res) => {
+  const { receipt, amount } = req.body;
 
-  if (!BillRefNumber || !BillRefNumber.startsWith("AIKES-")) {
-    return res.json({ ResultCode: 0, ResultDesc: "Ignored" });
-  }
+  if (!receipt || !amount)
+    return res.status(400).json({ message: "Receipt and amount required" });
 
-  const email = BillRefNumber.replace("AIKES-", "").trim();
-  const amount = Number(TransAmount);
+  if (amount < PRO_PRICE)
+    return res.status(400).json({
+      message: "Minimum upgrade is KES 200"
+    });
 
-  if (amount < PRO_MIN_AMOUNT) {
-    return res.json({ ResultCode: 0, ResultDesc: "Amount too low" });
-  }
-
-  try {
-    await pool.query(
-      `UPDATE users
-       SET plan='pro', messages_used=0
-       WHERE email=$1`,
-      [email]
-    );
-
-    return res.json({ ResultCode: 0, ResultDesc: "Accepted" });
-  } catch (err) {
-    console.error("C2B ERROR:", err.message);
-    return res.json({ ResultCode: 1, ResultDesc: "Failed" });
-  }
-});
-
-/* =========================
-   MANUAL RECEIPT VERIFICATION
-========================= */
-app.post("/api/payments/verify", async (req, res) => {
-  const { email, receipt, amount } = req.body;
-
-  if (!email || !receipt || !amount)
-    return res.status(400).json({ message: "Missing fields" });
-
-  if (amount < PRO_MIN_AMOUNT)
-    return res.status(400).json({ message: "Minimum is 200 KES" });
+  if (!/^[A-Z0-9]{8,12}$/.test(receipt))
+    return res.status(400).json({ message: "Invalid receipt format" });
 
   try {
     const used = await pool.query(
@@ -222,28 +196,87 @@ app.post("/api/payments/verify", async (req, res) => {
     await pool.query(
       `INSERT INTO payments (email, receipt, amount)
        VALUES ($1, $2, $3)`,
+      [req.user.email, receipt, amount]
+    );
+
+    await pool.query(
+      `UPDATE users
+       SET plan='pro',
+           messages_used=0
+       WHERE email=$1`,
+      [req.user.email]
+    );
+
+    res.json({
+      message: "Payment verified. You are now PRO 🎉",
+      plan: "pro"
+    });
+  } catch (err) {
+    console.error("UPGRADE ERROR:", err.message);
+    res.status(500).json({ message: "Upgrade failed" });
+  }
+});
+
+/* =========================
+   PUBLIC PAYMENT VERIFY
+========================= */
+app.post("/api/payments/verify", async (req, res) => {
+  const { email, receipt, amount } = req.body;
+
+  if (!email || !receipt || !amount)
+    return res.status(400).json({
+      message: "Email, receipt and amount are required"
+    });
+
+  if (amount < PRO_PRICE)
+    return res.status(400).json({
+      message: "Minimum upgrade is KES 200"
+    });
+
+  try {
+    const { rows: users } = await pool.query(
+      "SELECT * FROM users WHERE email=$1",
+      [email]
+    );
+
+    if (!users.length)
+      return res.status(404).json({ message: "User not found" });
+
+    const { rows: existing } = await pool.query(
+      "SELECT id FROM payments WHERE receipt=$1",
+      [receipt]
+    );
+
+    if (existing.length)
+      return res.status(409).json({ message: "Receipt already used" });
+
+    await pool.query(
+      `INSERT INTO payments (email, receipt, amount)
+       VALUES ($1, $2, $3)`,
       [email, receipt, amount]
     );
 
     await pool.query(
       `UPDATE users
-       SET plan='pro', messages_used=0
+       SET plan='pro',
+           messages_used=0
        WHERE email=$1`,
       [email]
     );
 
     res.json({
-      message: "Payment verified. PRO activated.",
+      message: "Payment verified. Pro activated.",
+      email,
       plan: "pro"
     });
   } catch (err) {
-    console.error("VERIFY ERROR:", err.message);
+    console.error("PAYMENT VERIFY ERROR:", err.message);
     res.status(500).json({ message: "Verification failed" });
   }
 });
 
 /* =========================
-   START SERVER (ONCE)
+   START
 ========================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
