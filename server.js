@@ -282,3 +282,35 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("🚀 AI-KES running on port", PORT);
 });
+
+/* =========================
+   ADMIN — USERS OVERVIEW
+========================= */
+app.get("/api/admin/users", async (req, res) => {
+  const adminKey = req.headers["x-admin-key"];
+
+  if (adminKey !== process.env.ADMIN_API_KEY) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        email,
+        plan,
+        CASE
+          WHEN plan = 'pro' THEN 'active'
+          ELSE 'free'
+        END AS subscription_status,
+        plan_expires_at
+      FROM users
+      ORDER BY email ASC
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("ADMIN ERROR:", err.message);
+    res.status(500).json({ message: "Admin fetch failed" });
+  }
+});
+
