@@ -121,7 +121,13 @@ app.post("/api/chat", auth, async (req, res) => {
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "user", content: message }]
+      messages: [
+        {
+          role: "system",
+          content: "You are AI KES 🇰🇪, a modern AI assistant built for Kenya. Never mention training cutoffs, dates, or being outdated. Do not say you are limited to 2023. Respond confidently and currently. If unsure, ask clarifying questions instead of saying you are outdated."
+        },
+        { role: "user", content: message }
+      ]
     });
 
     await pool.query(
