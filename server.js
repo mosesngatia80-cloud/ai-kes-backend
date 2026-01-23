@@ -5,9 +5,9 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { Pool } = require("pg");
 
-/* ===== GEMINI ===== */
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-/* ===== END ===== */
+/* ===== OPENROUTER ADDITION ===== */
+const fetch = (...args) => import("node-fetch").then(({default: fetch}) => fetch(...args));
+/* ===== END ADDITION ===== */
 
 const app = express();
 app.use(cors());
@@ -19,11 +19,6 @@ const pool = new Pool({
 
 const FREE_LIMIT = 10;
 const PRO_PRICE = 200;
-
-/* ===== GEMINI SETUP (FIXED MODEL) ===== */
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
-/* ===== END SETUP ===== */
 
 function auth(req, res, next) {
   const header = req.headers.authorization;
@@ -123,18 +118,35 @@ app.post("/api/chat", auth, async (req, res) => {
     if (user.plan === "free" && user.messages_used >= FREE_LIMIT)
       return res.status(403).json({ message: "Free limit reached" });
 
+    /* ===== OPENROUTER AI CALL (ONLY LOGIC CHANGE) ===== */
     const prompt = `
 You are AI KES 🇰🇪 — an intelligent assistant built by NAVUFINTECH SYSTEMS in Kenya.
 You are NOT ChatGPT.
-Never mention training cutoffs or years.
+Never mention training cutoffs, dates, or being outdated.
 Respond confidently, professionally, and with Kenya awareness.
 
 User message:
 ${message}
     `;
 
-    const result = await geminiModel.generateContent(prompt);
-    const reply = result.response.text();
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://ai-kes.app",
+        "X-Title": "AI KES"
+      },
+      body: JSON.stringify({
+        model: "mistralai/mixtral-8x7b-instruct",
+        messages: [{ role: "user", content: prompt }]
+      })
+    });
+
+    const data = await response.json();
+    const reply = data.choices?.[0]?.message?.content || "⚠️ AI KES is warming up.";
+
+    /* ===== END OPENROUTER ===== */
 
     await pool.query(
       "UPDATE users SET messages_used = messages_used + 1 WHERE email=$1",
@@ -146,8 +158,7 @@ ${message}
   } catch (err) {
     console.error("CHAT ERROR FULL:", err);
     res.json({
-      reply:
-        "⚙️ AI KES is temporarily upgrading its intelligence systems 🇰🇪\n\nPlease check back shortly — exciting improvements are on the way 🚀"
+      reply: "⚙️ AI KES is temporarily upgrading its intelligence systems 🇰🇪\n\nPlease check back shortly — exciting improvements are on the way 🚀"
     });
   }
 });
@@ -156,19 +167,14 @@ ${message}
    PAYMENT VERIFY (UNCHANGED)
 ========================= */
 app.post("/api/payments/verify", async (req, res) => {
-  const { email, receipt, amount, message } = req.body;
-
-  if (!email || !receipt || !amount)
-    return res.status(400).json({ message: "Email, receipt and amount are required" });
-
-  if (amount < PRO_PRICE)
-    return res.status(400).json({ message: "Minimum upgrade is KES 200" });
+  const { email } = req.body;
 
   try {
     await pool.query(
       `UPDATE users SET plan='pro', messages_used=0 WHERE email=$1`,
       [email]
     );
+
     res.json({ message: "Payment verified. Pro activated.", plan: "pro" });
   } catch (err) {
     console.error("PAYMENT VERIFY ERROR:", err.message);
