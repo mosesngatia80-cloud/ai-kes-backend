@@ -22,7 +22,7 @@ const PRO_PRICE = 200;
 
 /* ===== GEMINI SETUP ===== */
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
 /* ===== END SETUP ===== */
 
 function auth(req, res, next) {
@@ -123,7 +123,6 @@ app.post("/api/chat", auth, async (req, res) => {
     if (user.plan === "free" && user.messages_used >= FREE_LIMIT)
       return res.status(403).json({ message: "Free limit reached" });
 
-    /* ===== GEMINI REPLACEMENT (ONLY LOGIC CHANGE) ===== */
     const prompt = `
 You are AI KES 🇰🇪 — an intelligent assistant built by NAVUFINTECH SYSTEMS in Kenya.
 You are NOT ChatGPT.
@@ -138,7 +137,6 @@ ${message}
 
     const result = await geminiModel.generateContent(prompt);
     const reply = result.response.text();
-    /* ===== END REPLACEMENT ===== */
 
     await pool.query(
       "UPDATE users SET messages_used = messages_used + 1 WHERE email=$1",
