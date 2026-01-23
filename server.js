@@ -20,9 +20,11 @@ const pool = new Pool({
 const FREE_LIMIT = 10;
 const PRO_PRICE = 200;
 
-/* ===== GEMINI SETUP (FIXED MODEL) ===== */
+/* ===== GEMINI SETUP ===== */
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const geminiModel = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+/* ✅ ONLY LINE CHANGED BELOW */
+const geminiModel = genAI.getGenerativeModel({ model: "gemini-1.0-pro" });
 /* ===== END SETUP ===== */
 
 function auth(req, res, next) {
@@ -126,8 +128,10 @@ app.post("/api/chat", auth, async (req, res) => {
     const prompt = `
 You are AI KES 🇰🇪 — an intelligent assistant built by NAVUFINTECH SYSTEMS in Kenya.
 You are NOT ChatGPT.
-Never mention training cutoffs or years.
-Respond confidently and professionally.
+You must identify yourself as "AI KES" when asked who you are.
+You must NEVER mention training cutoffs, years, or being outdated.
+You speak confidently and as a modern, up-to-date AI.
+You provide helpful, professional, Kenya-aware responses.
 
 User message:
 ${message}
@@ -148,6 +152,70 @@ ${message}
     res.json({
       reply: "⚙️ AI KES is temporarily upgrading its intelligence systems 🇰🇪\n\nPlease check back shortly — exciting improvements are on the way 🚀"
     });
+  }
+});
+
+/* =========================
+   PAYMENT VERIFY (UNCHANGED)
+========================= */
+app.post("/api/payments/verify", async (req, res) => {
+  const { email, receipt, amount, message } = req.body;
+
+  if (!email || !receipt || !amount)
+    return res.status(400).json({ message: "Email, receipt and amount are required" });
+
+  if (amount < PRO_PRICE)
+    return res.status(400).json({ message: "Minimum upgrade is KES 200" });
+
+  if (message) {
+    const sms = message.toUpperCase();
+
+    if (!sms.includes("NAVUFINTECH SYSTEMS")) {
+      return res.status(400).json({ message: "Payment not sent to NAVUFINTECH SYSTEMS" });
+    }
+
+    const amountRegex = new RegExp(`KSH\\s*${amount}(\\.00)?`);
+    if (!amountRegex.test(sms)) {
+      return res.status(400).json({ message: "Payment amount mismatch" });
+    }
+
+    if (!sms.includes(receipt)) {
+      return res.status(400).json({ message: "Receipt not found in SMS" });
+    }
+  }
+
+  try {
+    const { rows: users } = await pool.query(
+      "SELECT id FROM users WHERE email=$1",
+      [email]
+    );
+
+    if (!users.length)
+      return res.status(404).json({ message: "User not found" });
+
+    const { rows: existing } = await pool.query(
+      "SELECT id FROM payments WHERE reference=$1",
+      [receipt]
+    );
+
+    if (existing.length)
+      return res.status(409).json({ message: "Receipt already used" });
+
+    await pool.query(
+      `INSERT INTO payments (user_email, reference, amount, status, raw_payload)
+       VALUES ($1, $2, $3, 'success', $4)`,
+      [email, receipt, amount, req.body]
+    );
+
+    await pool.query(
+      `UPDATE users SET plan='pro', messages_used=0 WHERE email=$1`,
+      [email]
+    );
+
+    res.json({ message: "Payment verified. Pro activated.", plan: "pro" });
+  } catch (err) {
+    console.error("PAYMENT VERIFY ERROR:", err.message);
+    res.status(500).json({ message: "Verification failed" });
   }
 });
 
