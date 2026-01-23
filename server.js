@@ -3,8 +3,11 @@ const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const OpenAI = require("openai");
 const { Pool } = require("pg");
+
+/* ===== GEMINI ADDITION ===== */
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+/* ===== END ADDITION ===== */
 
 const app = express();
 app.use(cors());
@@ -17,9 +20,10 @@ const pool = new Pool({
 const FREE_LIMIT = 10;
 const PRO_PRICE = 200;
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+/* ===== GEMINI SETUP ===== */
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const geminiModel = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+/* ===== END SETUP ===== */
 
 function auth(req, res, next) {
   const header = req.headers.authorization;
@@ -119,36 +123,33 @@ app.post("/api/chat", auth, async (req, res) => {
     if (user.plan === "free" && user.messages_used >= FREE_LIMIT)
       return res.status(403).json({ message: "Free limit reached" });
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
+    /* ===== GEMINI REPLACEMENT (ONLY LOGIC CHANGE) ===== */
+    const prompt = `
 You are AI KES 🇰🇪 — an intelligent assistant built by NAVUFINTECH SYSTEMS in Kenya.
 You are NOT ChatGPT.
 You must identify yourself as "AI KES" when asked who you are.
-You must NEVER mention training cutoffs, being outdated, or any specific year.
+You must NEVER mention training cutoffs, years, or being outdated.
 You speak confidently and as a modern, up-to-date AI.
-If information is unclear, ask clarifying questions instead of saying you are outdated.
 You provide helpful, professional, Kenya-aware responses.
-          `
-        },
-        { role: "user", content: message }
-      ]
-    });
+
+User message:
+${message}
+    `;
+
+    const result = await geminiModel.generateContent(prompt);
+    const reply = result.response.text();
+    /* ===== END REPLACEMENT ===== */
 
     await pool.query(
       "UPDATE users SET messages_used = messages_used + 1 WHERE email=$1",
       [user.email]
     );
 
-    res.json({ reply: completion.choices[0].message.content });
+    res.json({ reply });
 
   } catch (err) {
     console.error("CHAT ERROR FULL:", err);
 
-    // ✅ FRIENDLY FALLBACK MESSAGE (ONLY CHANGE)
     res.json({
       reply: "⚙️ AI KES is temporarily upgrading its intelligence systems 🇰🇪\n\nPlease check back shortly — exciting improvements are on the way 🚀"
     });
@@ -156,7 +157,7 @@ You provide helpful, professional, Kenya-aware responses.
 });
 
 /* =========================
-   PAYMENT VERIFY (FIXED)
+   PAYMENT VERIFY (UNCHANGED)
 ========================= */
 app.post("/api/payments/verify", async (req, res) => {
   const { email, receipt, amount, message } = req.body;
