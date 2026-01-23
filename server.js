@@ -146,9 +146,12 @@ You provide helpful, professional, Kenya-aware responses.
     res.json({ reply: completion.choices[0].message.content });
 
   } catch (err) {
-    /* ===== ONLY CHANGE: FULL ERROR LOGGING ===== */
     console.error("CHAT ERROR FULL:", err);
-    res.status(500).json({ message: "AI service error" });
+
+    // ✅ FRIENDLY FALLBACK MESSAGE (ONLY CHANGE)
+    res.json({
+      reply: "⚙️ AI KES is temporarily upgrading its intelligence systems 🇰🇪\n\nPlease check back shortly — exciting improvements are on the way 🚀"
+    });
   }
 });
 
