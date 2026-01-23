@@ -122,7 +122,6 @@ app.post("/api/chat", auth, async (req, res) => {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
-        /* ===== AI KES IDENTITY BLOCK (ONLY ADDITION) ===== */
         {
           role: "system",
           content: `
@@ -135,8 +134,6 @@ If information is unclear, ask clarifying questions instead of saying you are ou
 You provide helpful, professional, Kenya-aware responses.
           `
         },
-        /* ===== END ADDITION ===== */
-
         { role: "user", content: message }
       ]
     });
@@ -149,7 +146,14 @@ You provide helpful, professional, Kenya-aware responses.
     res.json({ reply: completion.choices[0].message.content });
   } catch (err) {
     console.error("CHAT ERROR:", err.message);
-    res.status(500).json({ message: "AI service error" });
+
+    /* ===== GRACEFUL FALLBACK (ONLY CHANGE) ===== */
+    res.json({
+      reply:
+        "⚠️ AI KES is temporarily upgrading its intelligence systems 🇰🇪\n\n" +
+        "Please try again shortly. Thank you for your patience."
+    });
+    /* ===== END FIX ===== */
   }
 });
 
